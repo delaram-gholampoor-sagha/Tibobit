@@ -20,18 +20,25 @@ func main() {
 	csvReader := csv.NewReader(file)
 
 	var wg sync.WaitGroup
-
-	// Add one goroutine for Read and one for calculateAge
 	wg.Add(2)
+
 	dataChan := Read(&wg, csvReader)
-	ageCountChan := calculateAge(&wg, dataChan)
+	ageCountChan := make(chan int)
 
-	// Wait for both goroutines to complete
-	wg.Wait()
+	go calculateAge(&wg, dataChan, ageCountChan)
 
-	// Safely read from ageCountChan
-	result := <-ageCountChan
-	fmt.Printf("Number of people above 30 years old: %d\n", result)
+	// Start a goroutine to close the ageCountChan when processing is done
+	go func() {
+		wg.Wait()
+		close(ageCountChan)
+	}()
+
+	totalCount := 0
+	for count := range ageCountChan {
+		totalCount += count
+	}
+
+	fmt.Printf("Number of people above 30 years old: %d\n", totalCount)
 }
 
 // Read function reads CSV lines and sends them to a channel
@@ -41,13 +48,13 @@ func Read(wg *sync.WaitGroup, csvReader *csv.Reader) <-chan []string {
 		defer wg.Done()
 		defer close(out)
 
-		// Skip the header row
 		_, err := csvReader.Read()
 		if err != nil {
 			log.Println("Error reading header:", err)
 			return
 		}
 
+		// Read the records
 		for {
 			record, err := csvReader.Read()
 			if err == io.EOF {
@@ -57,7 +64,6 @@ func Read(wg *sync.WaitGroup, csvReader *csv.Reader) <-chan []string {
 				log.Printf("Error reading record: %v", err)
 				continue
 			}
-			// Validate record has the required number of fields
 			if len(record) < 4 {
 				log.Println("Invalid record:", record)
 				continue
@@ -68,31 +74,28 @@ func Read(wg *sync.WaitGroup, csvReader *csv.Reader) <-chan []string {
 	return out
 }
 
-// calculateAge function processes user data and counts people above 30
-func calculateAge(wg *sync.WaitGroup, in <-chan []string) <-chan int {
-	out := make(chan int)
-	go func() {
-		defer wg.Done()
-		defer close(out)
+// calculateAge function processes user data and sends counts to a channel
+func calculateAge(wg *sync.WaitGroup, in <-chan []string, out chan<- int) {
+	defer wg.Done()
 
-		count := 0
-		for record := range in {
-			birthdate := record[3]
+	count := 0
+	for record := range in {
+		birthdate := record[3]
 
-			date, err := time.Parse("2006/01/02", birthdate)
-			if err != nil {
-				log.Printf("Error parsing date '%s': %v", birthdate, err)
-				continue
-			}
-
-			personAge := age(date)
-			if personAge > 30 {
-				count++
-			}
+		date, err := time.Parse("2006/01/02", birthdate)
+		if err != nil {
+			log.Printf("Error parsing date '%s': %v", birthdate, err)
+			continue
 		}
-		out <- count
-	}()
-	return out
+
+		personAge := age(date)
+		if personAge > 30 {
+			count++
+		}
+	}
+
+	log.Println("calculateAge completed. Sending count:", count)
+	out <- count // Send the final count to the channel
 }
 
 // age function calculates age based on the birthdate
